@@ -1,0 +1,133 @@
+name: Track Geant4 tags and publish AlmaLinux 9
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      geant4_tag:
+        description: Optional upstream tag to build (e.g. v11.3.2); empty detects new tags
+        default: ''
+        type: string
+  repository_dispatch:
+    types: [geant4-tag-created]
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A run includes discovery, publish and Git tagging: no PAT/tag-trigger chain.
+concurrency:
+  group: geant4-alma9-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s tests -v
+
+  discover:
+    if: github.event_name != 'pull_request'
+    needs: checks
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.tags.outputs.matrix }}
+      count: ${{ steps.tags.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve all unpublished upstream tags
+        id: tags
+        env:
+          REQUESTED_TAG: ${{ inputs.geant4_tag || github.event.client_payload.tag || '' }}
+        run: python3 scripts/upstream_tags.py --tag "$REQUESTED_TAG"
+
+  build:
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: write
+      packages: write
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+    env:
+      GEANT4_TAG: ${{ matrix.tag }}
+      GEANT4_COMMIT: ${{ matrix.commit }}
+      IMAGE_TAG: ${{ matrix.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build candidate image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: geant4-alma9:candidate
+          platforms: linux/amd64
+          build-args: |
+            GEANT4_TAG=${{ matrix.tag }}
+            GEANT4_COMMIT=${{ matrix.commit }}
+            SOURCE_REVISION=${{ github.sha }}
+            BUILD_JOBS=4
+          cache-from: type=gha,scope=geant4-alma9-${{ matrix.tag }}
+          cache-to: type=gha,mode=max,scope=geant4-alma9-${{ matrix.tag }}
+      - name: Test container
+        run: |
+          docker run --rm geant4-alma9:candidate geant4-config --version
+          docker run --rm -v "$PWD:/checks:ro" geant4-alma9:candidate python3 /checks/scripts/smoke_test.py
+          docker run --rm geant4-alma9:candidate bash -c 'cmake --version && g++ --version && test -z "$(ls -A /g4data)"'
+      - uses: actions/checkout@v4
+        with:
+          repository: G4Med-test/LowEFrag
+          ref: b72edd5c51ef61f59dd350f7172d28b2febcf866
+          path: _smoke/LowEFrag
+      - uses: actions/checkout@v4
+        with:
+          repository: G4Med-test/CCCStest
+          ref: b0fcf751f11961a6f915c1c74fd38293499449e9
+          path: _smoke/CCCStest
+      - uses: actions/checkout@v4
+        with:
+          repository: G4Med-test/Attenuation-ilantest
+          ref: d13c3c4e0de5eed2a5593295ca64081e5bc37130
+          path: _smoke/Attenuation-ilantest
+      - name: Compile the three validation applications
+        run: docker run --rm -v "$PWD:/checks:ro" geant4-alma9:candidate bash /checks/scripts/compile-tests.sh /checks/_smoke
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish tested image
+        run: |
+          docker tag geant4-alma9:candidate "$IMAGE:$IMAGE_TAG"
+          docker push "$IMAGE:$IMAGE_TAG"
+          docker pull "$IMAGE:$IMAGE_TAG"
+          digest=$(docker image inspect "$IMAGE:$IMAGE_TAG" --format '{{index .RepoDigests 0}}')
+          echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
+      - name: Create matching Git tag only after successful publication
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          record = {key: os.environ[env] for key, env in (
+              ('geant4_tag', 'GEANT4_TAG'), ('geant4_commit', 'GEANT4_COMMIT'),
+              ('recipe_commit', 'GITHUB_SHA'), ('image', 'IMAGE_DIGEST'))}
+          Path('/tmp/tag-message.json').write_text(json.dumps(record, indent=2) + '\n')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git tag -a "$GEANT4_TAG" "$GITHUB_SHA" -F /tmp/tag-message.json
+          git push origin "refs/tags/$GEANT4_TAG"
+          echo "Published **$IMAGE:$IMAGE_TAG** ($IMAGE_DIGEST)" >> "$GITHUB_STEP_SUMMARY"
