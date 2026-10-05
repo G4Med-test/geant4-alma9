@@ -9,6 +9,10 @@ on:
         description: Optional upstream tag to build (e.g. v11.3.2); empty detects new tags
         default: ''
         type: string
+      rebuild:
+        description: Rebuild and replace the selected SIF using the current recipe (requires geant4_tag)
+        default: false
+        type: boolean
   repository_dispatch:
     types: [geant4-tag-created]
   push:
@@ -50,10 +54,13 @@ jobs:
         env:
           REQUESTED_TAG: ${{ inputs.geant4_tag || github.event.client_payload.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REBUILD: ${{ github.event_name == 'workflow_dispatch' && inputs.rebuild && 'true' || 'false' }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          python3 scripts/upstream_tags.py --tag "$REQUESTED_TAG"
+          options=()
+          if [[ "$REBUILD" == true ]]; then options+=(--rebuild); fi
+          python3 scripts/upstream_tags.py --tag "$REQUESTED_TAG" "${options[@]}"
 
   build:
     needs: discover
@@ -73,35 +80,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.tag }}
+          # Pin to the workflow revision; manual rebuilds can migrate old tags.
+          ref: ${{ github.sha }}
       - name: Set image name
         run: |
           echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
           echo "RECIPE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-      - uses: docker/setup-buildx-action@v3
-      - name: Build candidate image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          load: true
-          tags: geant4-alma9:candidate
-          platforms: linux/amd64
-          build-args: |
-            GEANT4_TAG=${{ matrix.tag }}
-            GEANT4_COMMIT=${{ matrix.commit }}
-            SOURCE_REVISION=${{ env.RECIPE_COMMIT }}
-            BUILD_JOBS=4
-          cache-from: type=gha,scope=geant4-alma9-${{ matrix.tag }}
-          cache-to: type=gha,mode=max,scope=geant4-alma9-${{ matrix.tag }}
-      - name: Install Apptainer
+      - name: Install Apptainer and DNF
         run: |
           sudo add-apt-repository -y ppa:apptainer/ppa
           sudo apt-get update
-          sudo apt-get install -y apptainer
+          sudo apt-get install -y apptainer dnf rpm
+          # Ubuntu's default RPM database path differs from AlmaLinux's.
+          printf '%s\n' '%_var /var' '%_dbpath %{_var}/lib/rpm' | sudo tee /root/.rpmmacros > /dev/null
           apptainer version
-      - name: Build and test the SIF artifact
+      - name: Build SIF directly from AlmaLinux RPMs
         run: |
-          sudo apptainer build geant4-alma9.sif docker-daemon:geant4-alma9:candidate
+          sudo apptainer build \
+            --build-arg GEANT4_TAG="$GEANT4_TAG" \
+            --build-arg GEANT4_COMMIT="$GEANT4_COMMIT" \
+            --build-arg SOURCE_REVISION="$RECIPE_COMMIT" \
+            --build-arg BUILD_JOBS=4 \
+            geant4-alma9.sif Apptainer.def
+      - name: Test the SIF artifact
+        run: |
           sudo apptainer exec geant4-alma9.sif geant4-config --version
           sudo apptainer exec --bind "$PWD:/checks:ro" geant4-alma9.sif python3 /checks/scripts/smoke_test.py
           sudo apptainer exec geant4-alma9.sif bash -c 'cmake --version && g++ --version && test -z "$(ls -A /g4data)"'
@@ -139,6 +141,7 @@ jobs:
               ('geant4_tag', 'GEANT4_TAG'), ('geant4_commit', 'GEANT4_COMMIT'),
               ('recipe_commit', 'RECIPE_COMMIT'), ('workflow_commit', 'GITHUB_SHA'))}
           record['image'] = 'oras://' + os.environ['IMAGE'] + ':' + os.environ['GEANT4_TAG']
+          record['build_backend'] = 'apptainer-dnf'
           record['sif_sha256'] = Path('geant4-alma9.sif.sha256').read_text().split()[0]
           Path('provenance.json').write_text(json.dumps(record, indent=2) + '\n')
           PY

@@ -33,8 +33,10 @@ def parse_refs(text):
     return refs
 
 
-def plan(upstream, baseline, published, requested="", tagged=None):
+def plan(upstream, baseline, published, requested="", tagged=None, rebuild=False):
     tagged = tagged or {}
+    if rebuild and not requested:
+        raise ValueError("Rebuilding requires an explicit upstream tag")
     for tag, sha in upstream.items():
         previous = tagged.get(tag, published.get(tag, baseline.get(tag)))
         if previous and previous != sha:
@@ -44,7 +46,7 @@ def plan(upstream, baseline, published, requested="", tagged=None):
     candidates = [requested] if requested else sorted((set(upstream) - set(baseline)) | set(tagged))
     jobs = []
     for tag in candidates:
-        if tag in published:
+        if tag in published and not rebuild:
             continue
         if not TAG.fullmatch(tag) or len(tag) > 120:
             raise ValueError("Unsupported tag/image name: " + tag)
@@ -113,6 +115,7 @@ def create_tags(jobs, existing):
 def main():
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--tag", default="", help="Build a specific upstream tag, including historic versions")
+    cli.add_argument("--rebuild", action="store_true", help="Explicitly replace the selected image using this recipe revision")
     args = cli.parse_args()
     baseline = json.loads(Path("upstream-baseline.json").read_text())
     if baseline["upstream"] != UPSTREAM:
@@ -122,7 +125,7 @@ def main():
     tagged = repository_tags(upstream)
     images = registry_tags()
     published = {tag: sha for tag, sha in tagged.items() if tag in images}
-    jobs = plan(upstream, baseline["tags"], published, args.tag, tagged)
+    jobs = plan(upstream, baseline["tags"], published, args.tag, tagged, args.rebuild)
     create_tags(jobs, tagged)
     matrix = json.dumps({"include": jobs}, separators=(",", ":"))
     print(matrix)

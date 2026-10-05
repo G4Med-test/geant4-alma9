@@ -20,10 +20,13 @@ and uproot do not require ROOT/PyROOT, which is absent. Qt/OpenGL, GDML/Xerces,
 examples, source/build trees and physics datasets are omitted. Datasets are
 mounted at `/g4data`; `GEANT4_DATA_DIR` and `G4DATA_DIR` point there.
 
-The Dockerfile is an internal multi-stage compilation recipe. Actions converts
-its locally built result to SIF and publishes **only the SIF** through Apptainer
-ORAS. Consumers do not convert Docker layers or need Docker. The original OCI
-artifact `:11.3.2` is retained for compatibility; new SIF tags are `:v11.3.2`, etc.
+The complete build uses **Apptainer**, starting with `Apptainer.def` and
+`Bootstrap: dnf`. AlmaLinux 9 is installed directly from its RPM repositories;
+Geant4 and Python dependencies are installed in `%post`, and source trees and
+caches are removed before SIF compression. No Dockerfile, Docker daemon, Buildx,
+OCI base image or intermediate Docker image is used. Publication uses Apptainer
+ORAS. The legacy OCI artifact `:11.3.2` remains available; SIF tags retain the
+upstream spelling `:v11.3.2`, etc.
 
 ## One version source: the Git tag
 
@@ -34,23 +37,27 @@ For `v11.4.4` the workflow:
    tag dereferencing.
 2. Creates a same-name `v11.4.4` tag in this repository, recording the Geant4 source
    commit and recipe commit. Existing Git tags are never moved.
-3. Checks out that repository tag, compiles the resolved source and converts the
-   result into SIF. The tag is also passed to the image labels.
+3. Uses the recipe at the workflow's exact Git revision and builds the SIF
+   directly with Apptainer. The source tag is also passed to the image labels.
 4. Checks Python and weighted ROOT I/O without PyROOT and compiles all three tests
    inside the SIF at the source revisions pinned in the workflow.
 5. Pushes `oras://ghcr.io/g4med-test/geant4-alma9:v11.4.4`, pulls it back, and compares
    the SIF bytes. An Actions artifact records source/recipe/workflow commits and
    the SIF SHA-256.
 
-The initial `v11.3.2` tag predates SIF publication; it retains its original recipe
-commit. The new workflow converts that same recipe to SIF without rewriting the tag.
+The initial `v11.3.2` Git tag predates the native Apptainer recipe and retains its
+original commit. An explicit rebuild can use the current recipe without moving
+the Git tag or changing the Geant4 source commit. The provenance artifact records
+the actual recipe revision used for each build, including retries and rebuilds.
 
 A Git tag alone is **not** a successful build marker: the scheduled job checks
 GHCR for the exact tag. A tagged version without a published SIF is retried,
 including historic versions selected manually. Authentication/network errors are
 reported; only a package-not-found response is treated as a first publication.
-Moved upstream tags fail for manual review. Published SIF tags are not rebuilt
-or silently overwritten. Publication uses a concurrency lock.
+Moved upstream tags fail for manual review. Automatic runs skip published SIF
+tags. Replacement requires a manual dispatch with both `geant4_tag` and
+`rebuild=true`; this is also how the initial SIF is migrated to the native
+Apptainer recipe. Publication uses a concurrency lock.
 
 ## Triggers
 
@@ -67,6 +74,13 @@ are limited to 16; further tags remain pending.
 
 ```bash
 gh workflow run build.yml -R G4Med-test/geant4-alma9 -f geant4_tag=v11.4.3
+```
+
+To rebuild an existing image from the recipe on `main`:
+
+```bash
+gh workflow run build.yml -R G4Med-test/geant4-alma9 --ref main \
+  -f geant4_tag=v11.3.2 -f rebuild=true
 ```
 
 Git tag creation and the build run in the same workflow, avoiding the restriction
@@ -120,17 +134,28 @@ Run `python3 -m unittest discover -s tests -v` for tag planning/retry tests. The
 workflow checks the actual SIF and builds the three applications before pushing.
 It does not replace full simulations or experimental validation on Padova.
 
-The first [SIF publication and verification](https://github.com/G4Med-test/geant4-alma9/actions/runs/37281695826)
-succeeded for `v11.3.2`: 239,984,640 bytes (approximately 229 MiB), with a successful
-pull-back byte comparison. Its provenance and checksum are attached to that run.
-
-For a local intermediate build, pass both the Git tag and its resolved Geant4
-commit to Docker's `GEANT4_TAG` / `GEANT4_COMMIT` build arguments; neither has a
-hardcoded default in the current recipe. Convert with:
+Build locally on Linux with Apptainer, DNF and RPM installed. The GitHub runner
+installs these directly on Ubuntu, without a job container. On Ubuntu/Debian,
+configure root's RPM database path before the bootstrap, as required by Apptainer:
 
 ```bash
-apptainer build geant4-alma9.sif docker-daemon:geant4-alma9:local
+printf '%s\n' '%_var /var' '%_dbpath %{_var}/lib/rpm' | sudo tee /root/.rpmmacros
 ```
+
+Pass the desired tag and the corresponding **peeled source commit** (not an
+annotated tag object) as build arguments. Neither has a hardcoded default:
+
+```bash
+sudo apptainer build \
+  --build-arg GEANT4_TAG=v11.3.2 \
+  --build-arg GEANT4_COMMIT=62f62ecae238a7c304c52af4affbe70795475590 \
+  --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
+  --build-arg BUILD_JOBS=4 \
+  geant4-alma9.sif Apptainer.def
+```
+
+The workflow resolves the source commit automatically from the tag.
+See Apptainer's [`dnf` bootstrap documentation](https://apptainer.org/docs/user/latest/appendix.html#yum-or-dnf-bootstrap-agent).
 
 Inspired by [carlomt/docker-geant4/almalinux9](https://github.com/carlomt/docker-geant4/tree/0f7a2b00e70b6f647596d686b9d509e31392d71d/almalinux9).
 Geant4 remains subject to its [license](https://github.com/Geant4/geant4/blob/master/LICENSE).

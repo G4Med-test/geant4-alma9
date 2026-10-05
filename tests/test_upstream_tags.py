@@ -32,6 +32,16 @@ class TagTests(unittest.TestCase):
     def test_successful_tag_is_not_rebuilt(self):
         self.assertEqual(tags.plan({"v11.3.2": A}, {}, {"v11.3.2": A}), [])
 
+    def test_explicit_rebuild_only_selects_requested_version(self):
+        upstream = {"v11.3.2": A, "v11.4.0": B}
+        result = tags.plan(upstream, {}, upstream, "v11.3.2", rebuild=True)
+        self.assertEqual(result, [{"tag": "v11.3.2", "commit": A, "image_tag": "v11.3.2"}])
+
+    def test_rebuild_requires_tag_and_rejects_moved_source(self):
+        with self.assertRaises(ValueError): tags.plan({"v11.3.2": A}, {}, {}, rebuild=True)
+        with self.assertRaises(ValueError):
+            tags.plan({"v11.3.2": B}, {}, {"v11.3.2": A}, "v11.3.2", rebuild=True)
+
     def test_git_tag_without_published_sif_is_retried(self):
         # Includes historic tags (and the original OCI release) in the retry set.
         result = tags.plan({"v11.3.2": A}, {"v11.3.2": A}, {}, tagged={"v11.3.2": A})
