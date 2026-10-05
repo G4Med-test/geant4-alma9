@@ -22,9 +22,10 @@ Setopt: install_weak_deps=False
     [[ "$(uname -m)" == '{{ ALMA_ARCH }}' ]]
 
     # Keep compilers: the derived Apptainer images build the validation programs.
+    # `geant4-config --install-datasets` looks up curl, md5sum and tar with `which`.
     dnf install -y --setopt=install_weak_deps=False \
         gcc gcc-c++ make cmake expat-devel \
-        python3.12 python3.12-pip curl tar gzip ca-certificates
+        python3.12 python3.12-pip curl tar gzip which ca-certificates
     python3.12 -m venv /opt/venv
     /opt/venv/bin/python -m pip install --no-cache-dir --only-binary=:all: \
         -r /opt/g4med/requirements.txt
@@ -73,6 +74,7 @@ Setopt: install_weak_deps=False
 %test
     set -eu
     geant4-config --version
+    which curl md5sum tar > /dev/null  # needed by geant4-config --install-datasets
     python3 -c 'import uproot, numpy; import importlib.util; assert importlib.util.find_spec("ROOT") is None'
     test ! -e /tmp/geant4
 
