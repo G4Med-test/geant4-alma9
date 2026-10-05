@@ -22,7 +22,7 @@ Setopt: install_weak_deps=False
     # Keep compilers: the derived Apptainer images build the validation programs.
     dnf install -y --setopt=install_weak_deps=False \
         gcc gcc-c++ make cmake expat-devel \
-        python3.12 python3.12-pip curl-minimal tar gzip ca-certificates
+        python3.12 python3.12-pip curl tar gzip ca-certificates
     python3.12 -m venv /opt/venv
     /opt/venv/bin/python -m pip install --no-cache-dir --only-binary=:all: \
         -r /opt/g4med/requirements.txt
