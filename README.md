@@ -93,9 +93,9 @@ apptainer build --build-arg TAG=v11.3.2 LowEFrag.sif Apptainer.def
 apptainer run -B /cvmfs/geant4.cern.ch/share/data:/g4data:ro LowEFrag.sif macro/bic.mac
 ```
 
-GHCR packages initially default to private. Make the package public for anonymous
-pulls, or grant the three test repositories read access under its Actions access
-settings and authenticate their ORAS pulls. Retain the base's `/opt/geant4` and
+This package supports anonymous pulls (verified for `v11.3.2`). If deploying a
+private copy, grant the test repositories read access under its Actions access
+settings and authenticate before building. Retain the base's `/opt/geant4` and
 `/opt/venv` PATH/library settings in derived images.
 
 The parsers remain in each test repository, and the common exporter remains in
@@ -119,6 +119,10 @@ that runtime version from the image automatically.
 Run `python3 -m unittest discover -s tests -v` for tag planning/retry tests. The
 workflow checks the actual SIF and builds the three applications before pushing.
 It does not replace full simulations or experimental validation on Padova.
+
+The first [SIF publication and verification](https://github.com/G4Med-test/geant4-alma9/actions/runs/37281695826)
+succeeded for `v11.3.2`: 239,984,640 bytes (approximately 229 MiB), with a successful
+pull-back byte comparison. Its provenance and checksum are attached to that run.
 
 For a local intermediate build, pass both the Git tag and its resolved Geant4
 commit to Docker's `GEANT4_TAG` / `GEANT4_COMMIT` build arguments; neither has a
