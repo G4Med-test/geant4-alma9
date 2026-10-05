@@ -207,6 +207,12 @@ jobs:
       - name: Publish the multi-arch index
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Shown on the GHCR package page, whose install snippet is always `docker pull`.
+          DESCRIPTION: >-
+            Apptainer SIF, not a Docker image (linux/amd64, linux/arm64).
+            Pull with: apptainer pull geant4-alma9.sif
+            oras://ghcr.io/g4med-test/geant4-alma9:${{ matrix.job.tag }}
+            (Apptainer >= 1.5 selects the host architecture).
         run: |
           IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
           printf '%s' "$GITHUB_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
@@ -219,25 +225,28 @@ jobs:
             --annotation "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --annotation "org.opencontainers.image.title=G4Med Geant4 AlmaLinux 9" \
             --annotation "org.opencontainers.image.version=$GEANT4_TAG" \
-            --annotation "org.opencontainers.image.revision=$GITHUB_SHA"
+            --annotation "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --annotation "org.opencontainers.image.description=$DESCRIPTION"
           oras manifest push --media-type application/vnd.oci.image.index.v1+json \
             "$IMAGE:$GEANT4_TAG" index.json
-      - name: Pull each architecture through the multi-arch tag
+      # Apptainer refuses to pull a SIF for another architecture, so only the host
+      # (amd64) is pulled; the index itself was checked against both builds above.
+      - name: Verify the index and pull the host architecture through it
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          pushed=$(oras manifest fetch --descriptor "$IMAGE:$GEANT4_TAG" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')
+          test "$pushed" = "sha256:$(sha256sum index.json | cut -d' ' -f1)"
           printf '%s' "$GITHUB_TOKEN" | apptainer registry login \
             -u "$GITHUB_ACTOR" --password-stdin oras://ghcr.io
-          echo "Published multi-arch **oras://$IMAGE:$GEANT4_TAG**" >> "$GITHUB_STEP_SUMMARY"
-          for arch in amd64 arm64; do
-            apptainer pull --arch "$arch" "$arch.sif" "oras://$IMAGE:$GEANT4_TAG"
-            expected=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sif_sha256"])' \
-              "provenance/$arch/provenance.json")
-            echo "$expected  $arch.sif" | sha256sum -c -
-            echo "- linux/$arch: \`$expected\`" >> "$GITHUB_STEP_SUMMARY"
-            rm -f "$arch.sif"
-          done
+          apptainer pull host.sif "oras://$IMAGE:$GEANT4_TAG"
+          expected=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sif_sha256"])' \
+            provenance/amd64/provenance.json)
+          echo "$expected  host.sif" | sha256sum -c -
+          rm -f host.sif
+          echo "Published multi-arch **oras://$IMAGE:$GEANT4_TAG** (\`$pushed\`)" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: sif-provenance-${{ matrix.job.tag }}

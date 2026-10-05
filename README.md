@@ -16,6 +16,9 @@ apptainer exec geant4-alma9.sif geant4-config --version
 | `vX.Y.Z-amd64` | x86_64 SIF only |
 | `vX.Y.Z-arm64` | aarch64 SIF only |
 
+The `docker pull` command shown on the GHCR package page is generic GitHub text:
+these are SIF files, to be pulled with Apptainer as above.
+
 Automatic architecture selection on `oras://` requires **Apptainer ≥ 1.5.0**.
 Older clients ignore the index platform and always receive `amd64`; on ARM with
 an older Apptainer, pull the explicit `-arm64` tag. Another architecture can be
@@ -61,8 +64,9 @@ For `v11.4.4` the workflow:
    each back, and compares the SIF bytes.
 6. Only when both architectures succeeded, publishes `:v11.4.4` as an OCI image
    index referencing the two per-arch manifests by digest (after checking they hold
-   exactly the SIFs built by this run), then pulls it with `--arch amd64` and
-   `--arch arm64` and checks the SHA-256 of each. Actions artifacts record the
+   exactly the SIFs built by this run), checks the registry digest of the index
+   and pulls the host (amd64) SIF through it, comparing its SHA-256 (Apptainer
+   refuses to pull a SIF for a foreign architecture). Actions artifacts record the
    source/recipe/workflow commits, the per-arch SIF SHA-256 and the index.
 
 The initial `v11.3.2` Git tag predates the native Apptainer recipe and retains its
