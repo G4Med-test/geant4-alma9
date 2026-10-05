@@ -32,6 +32,12 @@ class TagTests(unittest.TestCase):
     def test_successful_tag_is_not_rebuilt(self):
         self.assertEqual(tags.plan({"v11.3.2": A}, {}, {"v11.3.2": A}), [])
 
+    def test_git_tag_without_published_sif_is_retried(self):
+        # Includes historic tags (and the original OCI release) in the retry set.
+        result = tags.plan({"v11.3.2": A}, {"v11.3.2": A}, {}, tagged={"v11.3.2": A})
+        self.assertEqual(result[0]["image_tag"], "v11.3.2")
+        self.assertEqual(tags.plan({"v11.3.2": A}, {}, {"v11.3.2": A}, tagged={"v11.3.2": A}), [])
+
     def test_invalid_names_and_missing_requested_tag_fail(self):
         for name in ("bad/tag", "v11.3.2;echo", "v11.3.2\nmalicious"):
             with self.assertRaises(ValueError): tags.plan({name: A}, {}, {})

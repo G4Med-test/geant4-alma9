@@ -15,8 +15,8 @@ RUN python3.12 -m venv /opt/venv \
          -r /opt/g4med/requirements.txt
 
 FROM common AS builder
-ARG GEANT4_TAG=v11.3.2
-ARG GEANT4_COMMIT=62f62ecae238a7c304c52af4affbe70795475590
+ARG GEANT4_TAG
+ARG GEANT4_COMMIT
 ARG BUILD_JOBS=2
 RUN [[ "$GEANT4_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
     && mkdir -p /tmp/geant4/src \
@@ -34,8 +34,8 @@ RUN [[ "$GEANT4_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
     && cmake --install /tmp/geant4/build --strip
 
 FROM common AS final
-ARG GEANT4_TAG=v11.3.2
-ARG GEANT4_COMMIT=62f62ecae238a7c304c52af4affbe70795475590
+ARG GEANT4_TAG
+ARG GEANT4_COMMIT
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.title="G4Med Geant4 AlmaLinux 9" \
       org.opencontainers.image.description="Geant4 batch validation build environment with Python and uproot" \
