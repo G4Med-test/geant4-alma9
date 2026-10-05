@@ -255,3 +255,16 @@ jobs:
             provenance/
           if-no-files-found: error
           overwrite: true
+      # A new version (not a rebuild of an existing one) is validated with every
+      # test listed in G4Med-test/ci-workflows/tests.json.
+      - name: Start the validation of the tests with this version
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.rebuild) }}
+        env:
+          GH_TOKEN: ${{ secrets.G4MED_DISPATCH_TOKEN }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::warning::G4MED_DISPATCH_TOKEN not set: tests not started for $GEANT4_TAG"
+            exit 0
+          fi
+          gh workflow run geant4-release.yml -R G4Med-test/ci-workflows -f geant4_tag="$GEANT4_TAG"
+          echo "Started [test validation](https://github.com/G4Med-test/ci-workflows/actions/workflows/geant4-release.yml) for $GEANT4_TAG" >> "$GITHUB_STEP_SUMMARY"

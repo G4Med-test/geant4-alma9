@@ -68,6 +68,11 @@ For `v11.4.4` the workflow:
    and pulls the host (amd64) SIF through it, comparing its SHA-256 (Apptainer
    refuses to pull a SIF for a foreign architecture). Actions artifacts record the
    source/recipe/workflow commits, the per-arch SIF SHA-256 and the index.
+7. For a new version (not a manual rebuild), starts
+   [`ci-workflows/geant4-release.yml`](https://github.com/G4Med-test/ci-workflows),
+   which runs the full pipeline of every test listed in its `tests.json` with this
+   version. This needs the `G4MED_DISPATCH_TOKEN` secret described there; without
+   it a warning is printed and publication is unaffected.
 
 The initial `v11.3.2` Git tag predates the native Apptainer recipe and retains its
 original commit. An explicit rebuild can use the current recipe without moving

@@ -1,3 +1,2 @@
-# ROOT file I/O for LowEFrag. CCCStest/attenuation and JSON use the standard library.
 uproot==5.7.6
 numpy==2.2.6
