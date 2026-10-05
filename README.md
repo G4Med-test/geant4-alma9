@@ -1,15 +1,29 @@
 # Geant4 AlmaLinux 9 — Apptainer base for G4Med
 
 One SIF base image for LowEFrag, CCCStest and Attenuation-ilantest, published on
-GHCR with the **exact upstream Geant4 tag**, including `v`:
+GHCR with the **exact upstream Geant4 tag**, including `v`, for `linux/amd64` and
+`linux/arm64`. The same command works on both: Apptainer picks the SIF for the
+host architecture.
 
 ```bash
 apptainer pull geant4-alma9.sif oras://ghcr.io/g4med-test/geant4-alma9:v11.3.2
 apptainer exec geant4-alma9.sif geant4-config --version
 ```
 
-The published architecture is `linux/amd64`, for the Padova runners. Geant4
-`v11.3.2` is the initial version, matching the existing tests.
+| Tag | Content |
+| --- | --- |
+| `vX.Y.Z` | multi-arch index (`linux/amd64`, `linux/arm64`) — use this |
+| `vX.Y.Z-amd64` | x86_64 SIF only |
+| `vX.Y.Z-arm64` | aarch64 SIF only |
+
+Automatic architecture selection on `oras://` requires **Apptainer ≥ 1.5.0**.
+Older clients ignore the index platform and always receive `amd64`; on ARM with
+an older Apptainer, pull the explicit `-arm64` tag. Another architecture can be
+requested with `apptainer pull --arch arm64 ...`.
+
+Geant4 `v11.3.2` is the initial version, matching the existing tests. Its tag
+was published as a single `amd64` SIF before multi-arch support; a manual rebuild
+(see below) replaces it with the multi-arch index.
 
 ## Contents
 
@@ -41,9 +55,15 @@ For `v11.4.4` the workflow:
    directly with Apptainer. The source tag is also passed to the image labels.
 4. Checks Python and weighted ROOT I/O without PyROOT and compiles all three tests
    inside the SIF at the source revisions pinned in the workflow.
-5. Pushes `oras://ghcr.io/g4med-test/geant4-alma9:v11.4.4`, pulls it back, and compares
-   the SIF bytes. An Actions artifact records source/recipe/workflow commits and
-   the SIF SHA-256.
+   Steps 3–4 run once per architecture on a **native** GitHub runner
+   (`ubuntu-24.04` for amd64, `ubuntu-24.04-arm` for arm64), without emulation.
+5. Pushes `oras://ghcr.io/g4med-test/geant4-alma9:v11.4.4-amd64` and `-arm64`, pulls
+   each back, and compares the SIF bytes.
+6. Only when both architectures succeeded, publishes `:v11.4.4` as an OCI image
+   index referencing the two per-arch manifests by digest (after checking they hold
+   exactly the SIFs built by this run), then pulls it with `--arch amd64` and
+   `--arch arm64` and checks the SHA-256 of each. Actions artifacts record the
+   source/recipe/workflow commits, the per-arch SIF SHA-256 and the index.
 
 The initial `v11.3.2` Git tag predates the native Apptainer recipe and retains its
 original commit. An explicit rebuild can use the current recipe without moving
@@ -51,7 +71,8 @@ the Git tag or changing the Geant4 source commit. The provenance artifact record
 the actual recipe revision used for each build, including retries and rebuilds.
 
 A Git tag alone is **not** a successful build marker: the scheduled job checks
-GHCR for the exact tag. A tagged version without a published SIF is retried,
+GHCR for the exact multi-arch tag. Per-arch tags do not count, so a version where
+one architecture failed is rebuilt for both. A tagged version without a published SIF is retried,
 including historic versions selected manually. Authentication/network errors are
 reported; only a package-not-found response is treated as a first publication.
 Moved upstream tags fail for manual review. Automatic runs skip published SIF
@@ -107,6 +128,8 @@ apptainer build --build-arg TAG=v11.3.2 LowEFrag.sif Apptainer.def
 apptainer run -B /cvmfs/geant4.cern.ch/share/data:/g4data:ro LowEFrag.sif macro/bic.mac
 ```
 
+`Bootstrap: oras` also selects the host architecture from the index
+(Apptainer ≥ 1.5.0), so the same definition builds on x86_64 and ARM machines.
 This package supports anonymous pulls (verified for `v11.3.2`). If deploying a
 private copy, grant the test repositories read access under its Actions access
 settings and authenticate before building. Retain the base's `/opt/geant4` and
@@ -130,8 +153,9 @@ that runtime version from the image automatically.
 
 ## Verification and origin
 
-Run `python3 -m unittest discover -s tests -v` for tag planning/retry tests. The
-workflow checks the actual SIF and builds the three applications before pushing.
+Run `python3 -m unittest discover -s tests -v` for tag planning/retry and index
+tests. The workflow checks the actual SIF and builds the three applications on
+each architecture before pushing.
 It does not replace full simulations or experimental validation on Padova.
 
 Build locally on Linux with Apptainer, DNF and RPM installed. The GitHub runner
@@ -142,14 +166,17 @@ configure root's RPM database path before the bootstrap, as required by Apptaine
 printf '%s\n' '%_var /var' '%_dbpath %{_var}/lib/rpm' | sudo tee /root/.rpmmacros
 ```
 
-Pass the desired tag and the corresponding **peeled source commit** (not an
-annotated tag object) as build arguments. Neither has a hardcoded default:
+Pass the desired tag, the corresponding **peeled source commit** (not an
+annotated tag object) and the host architecture as AlmaLinux names it (`x86_64` or
+`aarch64`, i.e. `uname -m`; cross-builds are rejected) as build arguments. None
+has a hardcoded default:
 
 ```bash
 sudo apptainer build \
   --build-arg GEANT4_TAG=v11.3.2 \
   --build-arg GEANT4_COMMIT=62f62ecae238a7c304c52af4affbe70795475590 \
   --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
+  --build-arg ALMA_ARCH="$(uname -m)" \
   --build-arg BUILD_JOBS=4 \
   geant4-alma9.sif Apptainer.def
 ```

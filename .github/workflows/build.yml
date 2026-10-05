@@ -62,21 +62,29 @@ jobs:
           if [[ "$REBUILD" == true ]]; then options+=(--rebuild); fi
           python3 scripts/upstream_tags.py --tag "$REQUESTED_TAG" "${options[@]}"
 
+  # Each architecture is built and tested on a native runner (no emulation) and
+  # pushed as :<tag>-<arch>; the index job then publishes :<tag> for both.
   build:
+    name: build ${{ matrix.job.tag }} (${{ matrix.platform.arch }})
     needs: discover
     if: needs.discover.outputs.count != '0'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 180
     permissions:
       contents: write
       packages: write
     strategy:
       fail-fast: false
-      max-parallel: 2
-      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+      max-parallel: 4
+      matrix:
+        job: ${{ fromJson(needs.discover.outputs.matrix).include }}
+        platform:
+          - {arch: amd64, alma_arch: x86_64, runner: ubuntu-24.04}
+          - {arch: arm64, alma_arch: aarch64, runner: ubuntu-24.04-arm}
     env:
-      GEANT4_TAG: ${{ matrix.tag }}
-      GEANT4_COMMIT: ${{ matrix.commit }}
+      GEANT4_TAG: ${{ matrix.job.tag }}
+      GEANT4_COMMIT: ${{ matrix.job.commit }}
+      ARCH: ${{ matrix.platform.arch }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -100,11 +108,13 @@ jobs:
             --build-arg GEANT4_TAG="$GEANT4_TAG" \
             --build-arg GEANT4_COMMIT="$GEANT4_COMMIT" \
             --build-arg SOURCE_REVISION="$RECIPE_COMMIT" \
+            --build-arg ALMA_ARCH=${{ matrix.platform.alma_arch }} \
             --build-arg BUILD_JOBS=4 \
             geant4-alma9.sif Apptainer.def
       - name: Test the SIF artifact
         run: |
           sudo apptainer exec geant4-alma9.sif geant4-config --version
+          test "$(sudo apptainer exec geant4-alma9.sif uname -m)" = '${{ matrix.platform.alma_arch }}'
           sudo apptainer exec --bind "$PWD:/checks:ro" geant4-alma9.sif python3 /checks/scripts/smoke_test.py
           sudo apptainer exec geant4-alma9.sif bash -c 'cmake --version && g++ --version && test -z "$(ls -A /g4data)"'
       - uses: actions/checkout@v4
@@ -124,14 +134,14 @@ jobs:
           path: _smoke/Attenuation-ilantest
       - name: Compile the three validation applications inside SIF
         run: sudo apptainer exec --bind "$PWD:/checks:ro" geant4-alma9.sif bash /checks/scripts/compile-tests.sh /checks/_smoke
-      - name: Publish and verify the SIF on GHCR
+      - name: Publish and verify the per-arch SIF on GHCR
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           printf '%s' "$GITHUB_TOKEN" | apptainer registry login \
             -u "$GITHUB_ACTOR" --password-stdin oras://ghcr.io
-          apptainer push geant4-alma9.sif "oras://$IMAGE:$GEANT4_TAG"
-          apptainer pull verified.sif "oras://$IMAGE:$GEANT4_TAG"
+          apptainer push geant4-alma9.sif "oras://$IMAGE:$GEANT4_TAG-$ARCH"
+          apptainer pull --arch "$ARCH" verified.sif "oras://$IMAGE:$GEANT4_TAG-$ARCH"
           cmp geant4-alma9.sif verified.sif
           sha256sum geant4-alma9.sif > geant4-alma9.sif.sha256
           python3 - <<'PY'
@@ -140,17 +150,99 @@ jobs:
           record = {key: os.environ[env] for key, env in (
               ('geant4_tag', 'GEANT4_TAG'), ('geant4_commit', 'GEANT4_COMMIT'),
               ('recipe_commit', 'RECIPE_COMMIT'), ('workflow_commit', 'GITHUB_SHA'))}
-          record['image'] = 'oras://' + os.environ['IMAGE'] + ':' + os.environ['GEANT4_TAG']
+          record['arch'] = os.environ['ARCH']
+          record['image'] = 'oras://' + os.environ['IMAGE'] + ':' + os.environ['GEANT4_TAG'] + '-' + os.environ['ARCH']
           record['build_backend'] = 'apptainer-dnf'
           record['sif_sha256'] = Path('geant4-alma9.sif.sha256').read_text().split()[0]
           Path('provenance.json').write_text(json.dumps(record, indent=2) + '\n')
           PY
-          echo "Published and pulled back **oras://$IMAGE:$GEANT4_TAG**" >> "$GITHUB_STEP_SUMMARY"
+          echo "Published and pulled back **oras://$IMAGE:$GEANT4_TAG-$ARCH**" >> "$GITHUB_STEP_SUMMARY"
           cat geant4-alma9.sif.sha256 >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
-          name: sif-provenance-${{ matrix.tag }}
+          name: sif-provenance-${{ matrix.job.tag }}-${{ matrix.platform.arch }}
           path: |
             provenance.json
             geant4-alma9.sif.sha256
           if-no-files-found: error
+          overwrite: true
+
+  # The multi-arch tag is the completion marker checked by discover: it is only
+  # written when both architectures of this run were built, tested and pushed.
+  index:
+    name: index ${{ matrix.job.tag }}
+    needs: [discover, build]
+    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.discover.outputs.count != '0' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        job: ${{ fromJson(needs.discover.outputs.matrix).include }}
+    env:
+      GEANT4_TAG: ${{ matrix.job.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      # Download by exact name: a glob could match another tag (v11.3.2-beta-*).
+      - uses: actions/download-artifact@v4
+        with:
+          name: sif-provenance-${{ matrix.job.tag }}-amd64
+          path: provenance/amd64
+      - uses: actions/download-artifact@v4
+        with:
+          name: sif-provenance-${{ matrix.job.tag }}-arm64
+          path: provenance/arm64
+      - uses: oras-project/setup-oras@v1
+      - name: Install Apptainer
+        run: |
+          sudo add-apt-repository -y ppa:apptainer/ppa
+          sudo apt-get update
+          sudo apt-get install -y apptainer
+          apptainer version
+      - name: Publish the multi-arch index
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GITHUB_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          entries=()
+          for arch in amd64 arm64; do
+            oras manifest fetch --output "manifest-$arch.json" "$IMAGE:$GEANT4_TAG-$arch"
+            entries+=(--entry "$arch" "manifest-$arch.json" "provenance/$arch/provenance.json")
+          done
+          python3 scripts/oci_index.py --tag "$GEANT4_TAG" --output index.json "${entries[@]}" \
+            --annotation "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --annotation "org.opencontainers.image.title=G4Med Geant4 AlmaLinux 9" \
+            --annotation "org.opencontainers.image.version=$GEANT4_TAG" \
+            --annotation "org.opencontainers.image.revision=$GITHUB_SHA"
+          oras manifest push --media-type application/vnd.oci.image.index.v1+json \
+            "$IMAGE:$GEANT4_TAG" index.json
+      - name: Pull each architecture through the multi-arch tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GITHUB_TOKEN" | apptainer registry login \
+            -u "$GITHUB_ACTOR" --password-stdin oras://ghcr.io
+          echo "Published multi-arch **oras://$IMAGE:$GEANT4_TAG**" >> "$GITHUB_STEP_SUMMARY"
+          for arch in amd64 arm64; do
+            apptainer pull --arch "$arch" "$arch.sif" "oras://$IMAGE:$GEANT4_TAG"
+            expected=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sif_sha256"])' \
+              "provenance/$arch/provenance.json")
+            echo "$expected  $arch.sif" | sha256sum -c -
+            echo "- linux/$arch: \`$expected\`" >> "$GITHUB_STEP_SUMMARY"
+            rm -f "$arch.sif"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sif-provenance-${{ matrix.job.tag }}
+          path: |
+            index.json
+            provenance/
+          if-no-files-found: error
+          overwrite: true
