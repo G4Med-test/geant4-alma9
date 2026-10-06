@@ -24,8 +24,14 @@ permissions:
   contents: read
 
 # A run includes discovery, publish and Git tagging: no PAT/tag-trigger chain.
+# GitHub keeps one pending run per group and cancels older pending ones, so a
+# rebuild (of an already published tag, skipped by the other runs and never
+# re-tagged) gets its own group: rebuilds of different versions run in parallel
+# and are not cancelled by the hourly schedule.
 concurrency:
-  group: geant4-alma9-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  group: >-
+    geant4-alma9-${{ github.event_name == 'pull_request' && github.ref
+    || inputs.rebuild && format('rebuild-{0}', inputs.geant4_tag) || 'publish' }}
   cancel-in-progress: false
 
 jobs:
